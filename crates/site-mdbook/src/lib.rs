@@ -83,7 +83,7 @@ impl MdBookBuilder {
         // SUMMARY.mdを生成
         self.generate_summary(&src_dir, toc)?;
 
-        // 各章を並列生成（16並列対応）
+        // 各章を並列生成（50並列対応：tech-book-readerの実装を参考）
         // インデックスと設定をクローンして各セクションで使用可能にする
         let index_clone = index.clone();
         let config_clone = self.config.clone();
@@ -112,6 +112,59 @@ impl MdBookBuilder {
                 ).await
             });
             section_handles.push(handle);
+        }
+        
+        // モジュールページは50並列で1つのファイルにまとめて生成
+        if toc.contains(&"modules".to_string()) {
+            let index_for_modules = index_clone.clone();
+            let config_for_modules = config_clone.clone();
+            
+            // まず、モジュール一覧を生成
+            let mut modules_content = String::from("# モジュール\n\n");
+            modules_content.push_str("このセクションでは、各モジュールについて詳しく説明します。\n\n");
+            modules_content.push_str("## モジュール一覧\n\n");
+            for module in &index.modules {
+                // mdBookのアンカーリンクは見出しから自動生成されるため、見出しテキストをそのまま使用
+                // 特殊文字はmdBookが自動的に処理するので、そのまま使用
+                modules_content.push_str(&format!("- [{}](#{})\n", module.name, module.name));
+            }
+            modules_content.push_str("\n\n---\n\n");
+            
+            // 各モジュールごとに50並列で処理して、1つのファイルにまとめる
+            let mut module_handles = Vec::new();
+            let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(50));
+            
+            for module in &index.modules {
+                let module = module.clone();
+                let index_for_module = index_for_modules.clone();
+                let config_for_module = config_for_modules.clone();
+                let permit = semaphore.clone();
+                
+                let handle = tokio::spawn(async move {
+                    let _permit = permit.acquire().await.unwrap();
+                    let summarizer = Summarizer::new(config_for_module.clone());
+                    
+                    Self::generate_module_content_detailed(
+                        &index_for_module,
+                        &module,
+                        &summarizer,
+                    ).await
+                });
+                module_handles.push(handle);
+            }
+            
+            // すべてのモジュールページを並列実行して結果を収集
+            for handle in module_handles {
+                if let Ok(Ok(module_content)) = handle.await {
+                    modules_content.push_str(&module_content);
+                    modules_content.push_str("\n\n---\n\n");
+                }
+            }
+            
+            // 1つのファイルにまとめる
+            let modules_file_path = src_dir.join("modules.md");
+            fs::write(&modules_file_path, modules_content)
+                .with_context(|| format!("modules.mdの書き込みに失敗しました: {:?}", modules_file_path))?;
         }
         
         // すべてのセクションを並列実行して結果を収集
@@ -204,7 +257,206 @@ optional = true
         }
     }
 
-    /// セクションを並列実行用に生成（静的メソッド）
+    /// モジュールコンテンツを詳細に生成（50並列対応、文字列を返す）
+    /// 
+    /// # 引数
+    /// * `index` - インデックス
+    /// * `module` - モジュール情報
+    /// * `summarizer` - サマライザー
+    /// 
+    /// # 戻り値
+    /// * `Result<String>` - モジュールコンテンツ、またはエラー
+    async fn generate_module_content_detailed(
+        index: &Index,
+        module: &analyzer_core::ModuleInfo,
+        summarizer: &Summarizer,
+    ) -> Result<String> {
+        let mut content = String::new();
+        
+        // mdBookのアンカーリンクは見出しから自動生成されるため、見出しをそのまま使用
+        content.push_str(&format!("## {}\n\n", module.name));
+        content.push_str(&format!("**ファイル**: `{}`  \n", module.path.display()));
+        content.push_str(&format!("**言語**: {}\n\n", module.language));
+        
+        // ファイル情報を取得してメソッドを抽出
+        if let Some(file_info) = index.files.iter().find(|f| f.path == module.path) {
+            if let Some(file_content) = &file_info.content {
+                let methods = summarizer.extract_methods_detailed(file_content, &file_info.language);
+                
+                if !methods.is_empty() {
+                    content.push_str("### 主要な関数・メソッド\n\n");
+                    content.push_str("このモジュールには以下の関数やメソッドが含まれています。各メソッドについて、日本語で詳しく解説します。\n\n");
+                    
+                    // 各メソッドごとに詳細な解説を生成
+                    for method in methods.iter().take(30) {
+                        content.push_str(&format!("#### {}\n\n", method.name));
+                        
+                        // 日本語の説明を生成（英語コメントを翻訳）
+                        let doc_ja = if !method.documentation.is_empty() {
+                            summarizer.translate_doc_to_japanese(&method.documentation)
+                        } else {
+                            summarizer.infer_function_purpose_simple(&method.name)
+                        };
+                        
+                        content.push_str(&format!("{}\n\n", doc_ja));
+                        
+                        // コードの動作を詳しく説明
+                        content.push_str("##### コードの動作\n\n");
+                        content.push_str("この関数の実装を見てみましょう。\n\n");
+                        
+                        // コードブロック（必ず表示）
+                        let code_lines: Vec<&str> = method.code_snippet.lines().collect();
+                        if code_lines.len() <= 40 {
+                            content.push_str("```");
+                            content.push_str(&method.language);
+                            content.push_str("\n");
+                            content.push_str(&method.code_snippet);
+                            content.push_str("\n```\n\n");
+                        } else {
+                            // 重要な部分だけ表示
+                            content.push_str("```");
+                            content.push_str(&method.language);
+                            content.push_str("\n");
+                            for line in code_lines.iter().take(20) {
+                                content.push_str(line);
+                                content.push_str("\n");
+                            }
+                            content.push_str("// ... (省略) ...\n");
+                            for line in code_lines.iter().skip(code_lines.len().saturating_sub(5)) {
+                                content.push_str(line);
+                                content.push_str("\n");
+                            }
+                            content.push_str("```\n\n");
+                        }
+                        
+                        // コードの説明を追加
+                        content.push_str("このコードは以下の処理を行います：\n\n");
+                        content.push_str(&format!("- `{}`関数は、", method.name));
+                        // コードから処理内容を推測
+                        let code_lower = method.code_snippet.to_lowercase();
+                        if code_lower.contains("return") {
+                            content.push_str("値を返します。");
+                        } else if code_lower.contains("mut") || code_lower.contains("let") {
+                            content.push_str("変数を操作します。");
+                        } else if code_lower.contains("if") || code_lower.contains("match") {
+                            content.push_str("条件分岐を行います。");
+                        } else if code_lower.contains("loop") || code_lower.contains("for") || code_lower.contains("while") {
+                            content.push_str("繰り返し処理を行います。");
+                        } else {
+                            content.push_str("何らかの処理を実行します。");
+                        }
+                        content.push_str("\n\n");
+                    }
+                }
+            }
+        }
+        
+        Ok(content)
+    }
+
+    /// 個別のモジュールページを詳細に生成（50並列対応）
+    /// 
+    /// # 引数
+    /// * `index` - インデックス
+    /// * `modules_dir` - モジュールディレクトリ
+    /// * `module` - モジュール情報
+    /// * `summarizer` - サマライザー
+    /// 
+    /// # 戻り値
+    /// * `Result<()>` - 成功、またはエラー
+    async fn generate_module_page_detailed(
+        index: &Index,
+        modules_dir: &Path,
+        module: &analyzer_core::ModuleInfo,
+        summarizer: &Summarizer,
+    ) -> Result<()> {
+        let mut content = String::new();
+        
+        content.push_str(&format!("# {}\n\n", module.name));
+        content.push_str(&format!("**ファイル**: `{}`  \n", module.path.display()));
+        content.push_str(&format!("**言語**: {}\n\n", module.language));
+        
+        // ファイル情報を取得してメソッドを抽出
+        if let Some(file_info) = index.files.iter().find(|f| f.path == module.path) {
+            if let Some(file_content) = &file_info.content {
+                let methods = summarizer.extract_methods_detailed(file_content, &file_info.language);
+                
+                if !methods.is_empty() {
+                    content.push_str("## 主要な関数・メソッド\n\n");
+                    content.push_str("このモジュールには以下の関数やメソッドが含まれています。各メソッドについて、日本語で詳しく解説します。\n\n");
+                    
+                    // 各メソッドごとに詳細な解説を生成
+                    for method in methods.iter().take(30) {
+                        content.push_str(&format!("### {}\n\n", method.name));
+                        
+                        // 日本語の説明を生成（英語コメントを翻訳）
+                        let doc_ja = if !method.documentation.is_empty() {
+                            summarizer.translate_doc_to_japanese(&method.documentation)
+                        } else {
+                            summarizer.infer_function_purpose_simple(&method.name)
+                        };
+                        
+                        content.push_str(&format!("{}\n\n", doc_ja));
+                        
+                        // コードの動作を詳しく説明
+                        content.push_str("#### コードの動作\n\n");
+                        content.push_str("この関数の実装を見てみましょう。\n\n");
+                        
+                        // コードブロック（必ず表示）
+                        let code_lines: Vec<&str> = method.code_snippet.lines().collect();
+                        if code_lines.len() <= 40 {
+                            content.push_str("```");
+                            content.push_str(&method.language);
+                            content.push_str("\n");
+                            content.push_str(&method.code_snippet);
+                            content.push_str("\n```\n\n");
+                        } else {
+                            // 重要な部分だけ表示
+                            content.push_str("```");
+                            content.push_str(&method.language);
+                            content.push_str("\n");
+                            for line in code_lines.iter().take(20) {
+                                content.push_str(line);
+                                content.push_str("\n");
+                            }
+                            content.push_str("// ... (省略) ...\n");
+                            for line in code_lines.iter().skip(code_lines.len().saturating_sub(5)) {
+                                content.push_str(line);
+                                content.push_str("\n");
+                            }
+                            content.push_str("```\n\n");
+                        }
+                        
+                        // コードの説明を追加
+                        content.push_str("このコードは以下の処理を行います：\n\n");
+                        content.push_str(&format!("- `{}`関数は、", method.name));
+                        // コードから処理内容を推測
+                        let code_lower = method.code_snippet.to_lowercase();
+                        if code_lower.contains("return") {
+                            content.push_str("値を返します。");
+                        } else if code_lower.contains("mut") || code_lower.contains("let") {
+                            content.push_str("変数を操作します。");
+                        } else if code_lower.contains("if") || code_lower.contains("match") {
+                            content.push_str("条件分岐を行います。");
+                        } else if code_lower.contains("loop") || code_lower.contains("for") || code_lower.contains("while") {
+                            content.push_str("繰り返し処理を行います。");
+                        } else {
+                            content.push_str("何らかの処理を実行します。");
+                        }
+                        content.push_str("\n\n");
+                    }
+                }
+            }
+        }
+        
+        // ファイル名を安全な形に変換
+        let safe_name = module.name.replace("::", "_").replace("/", "_").replace("\\", "_");
+        let file_path = modules_dir.join(format!("{}.md", safe_name));
+        fs::write(&file_path, content)
+            .with_context(|| format!("モジュールページの書き込みに失敗しました: {:?}", file_path))?;
+        
+        Ok(())
+    }
     /// 
     /// # 引数
     /// * `index` - インデックス
@@ -224,20 +476,21 @@ optional = true
         summarizer: &Summarizer,
         diagrammer: &Diagrammer,
     ) -> Result<usize> {
+        // modulesセクションは別途50並列で生成されるため、ここではスキップ
+        if section == "modules" {
+            return Ok(1);
+        }
+        
         let content = match section {
             "overview" => Self::generate_overview_parallel(index, summarizer).await?,
             "architecture" => Self::generate_architecture_parallel(index, with_diagrams, diagrammer).await?,
-            "modules" => Self::generate_modules_parallel(index, summarizer).await?,
             "flows" => Self::generate_flows_parallel(index, with_diagrams, diagrammer).await?,
             "deploy" => Self::generate_deploy_parallel(index, diagrammer).await?,
             "faq" => Self::generate_faq_parallel(index).await?,
             _ => format!("# {}\n\nセクションの内容\n", section),
         };
 
-        let page_count = match section {
-            "modules" => index.modules.len().max(1),
-            _ => 1,
-        };
+        let page_count = 1;
 
         let file_path = src_dir.join(format!("{}.md", section));
         fs::write(&file_path, content)
@@ -286,42 +539,38 @@ optional = true
         Ok(page_count)
     }
 
-    /// 概要セクションを並列実行用に生成（よりわかりやすく）
-    async fn generate_overview_parallel(index: &Index, summarizer: &Summarizer) -> Result<String> {
-        let summary_result = summarizer
-            .summarize(index, "repo", "", "detailed-ja")
-            .await?;
-
+    /// 概要セクションを並列実行用に生成（図のみ）
+    async fn generate_overview_parallel(index: &Index, _summarizer: &Summarizer) -> Result<String> {
         let mut content = String::from("# 概要\n\n");
-        content.push_str("このページでは、リポジトリ全体の概要を説明します。\n\n");
-        content.push_str(&summary_result.content_md);
+        content.push_str("このページでは、リポジトリ全体の構成を図で示します。\n\n");
         
-        // 統計情報をよりわかりやすく表示
-        content.push_str("\n## 統計情報\n\n");
+        // 統計情報を簡潔に表示
+        content.push_str("## 統計情報\n\n");
         content.push_str(&format!("- **ファイル数**: {}個\n", index.stats.files));
         content.push_str(&format!("- **使用言語**: {}\n", index.stats.languages.join(", ")));
         content.push_str(&format!("- **モジュール数**: {}個\n\n", index.stats.modules));
         
-        content.push_str("これらのファイルやモジュールがどのように動作するか、次のセクションで詳しく見ていきます。\n\n");
+        // 全体構成図のみ
+        content.push_str("## 全体構成図\n\n");
+        content.push_str("```mermaid\n");
+        content.push_str("graph TD\n");
+        content.push_str("    A[リポジトリ全体] --> B[ファイル]\n");
+        content.push_str("    A --> C[モジュール]\n");
+        content.push_str("    A --> D[依存関係]\n");
+        content.push_str(&format!("    B --> E[{}ファイル]\n", index.stats.files));
+        content.push_str(&format!("    C --> F[{}モジュール]\n", index.stats.modules));
+        content.push_str("```\n\n");
 
         Ok(content)
     }
 
-    /// アーキテクチャセクションを並列実行用に生成
+    /// アーキテクチャセクションを並列実行用に生成（図のみ）
     async fn generate_architecture_parallel(
         index: &Index,
         with_diagrams: bool,
         diagrammer: &Diagrammer,
     ) -> Result<String> {
         let mut content = String::from("# アーキテクチャ\n\n");
-
-        content.push_str("## システム構成\n\n");
-        content.push_str(&format!(
-            "このリポジトリは{}ファイル、{}言語、{}モジュールで構成されています。\n\n",
-            index.stats.files,
-            index.stats.languages.len(),
-            index.stats.modules
-        ));
 
         if with_diagrams {
             content.push_str("## モジュールグラフ\n\n");
@@ -331,77 +580,27 @@ optional = true
             }
         }
 
-        content.push_str("## 主要コンポーネント\n\n");
-        for module in &index.modules {
-            content.push_str(&format!("- **{}** (`{}`)\n", module.name, module.path.display()));
-        }
-
         Ok(content)
     }
 
-    /// モジュールセクションを並列実行用に生成（メソッドとコードブロック中心、重複なし）
-    async fn generate_modules_parallel(index: &Index, summarizer: &Summarizer) -> Result<String> {
+    /// モジュールセクションを並列実行用に生成（実際のコンテンツは別途50並列で生成）
+    async fn generate_modules_parallel(index: &Index, _summarizer: &Summarizer) -> Result<String> {
         let mut content = String::from("# モジュール\n\n");
-        content.push_str("このセクションでは、各モジュールのメソッドとコードを詳しく説明します。\n\n");
+        content.push_str("このセクションでは、各モジュールについて詳しく説明します。\n\n");
+        content.push_str("各モジュールの詳細は以下の通りです。\n\n");
 
+        // モジュール一覧を追加（アンカーリンク用）
+        content.push_str("## モジュール一覧\n\n");
         for module in &index.modules {
-            // ファイル情報を取得してメソッドを抽出
-            if let Some(file_info) = index.files.iter().find(|f| f.path == module.path) {
-                if let Some(file_content) = &file_info.content {
-                    let methods = summarizer.extract_methods_detailed(file_content, &file_info.language);
-                    
-                    if !methods.is_empty() {
-                        content.push_str(&format!("## {}\n\n", module.name));
-                        content.push_str(&format!("**ファイル**: `{}`  \n", module.path.display()));
-                        content.push_str(&format!("**言語**: {}\n\n", module.language));
-                        
-                        // 各メソッドごとに説明とコードブロックのみ
-                        for method in methods.iter().take(20) {
-                            content.push_str(&format!("### {}\n\n", method.name));
-                            
-                            // 日本語の説明を生成（英語コメントを翻訳）
-                            let doc_ja = if !method.documentation.is_empty() {
-                                summarizer.translate_doc_to_japanese(&method.documentation)
-                            } else {
-                                summarizer.infer_function_purpose_simple(&method.name)
-                            };
-                            
-                            content.push_str(&format!("{}\n\n", doc_ja));
-                            
-                            // コードブロック（必ず表示）
-                            let code_lines: Vec<&str> = method.code_snippet.lines().collect();
-                            if code_lines.len() <= 30 {
-                                content.push_str("```");
-                                content.push_str(&method.language);
-                                content.push_str("\n");
-                                content.push_str(&method.code_snippet);
-                                content.push_str("\n```\n\n");
-                            } else {
-                                // 重要な部分だけ表示
-                                content.push_str("```");
-                                content.push_str(&method.language);
-                                content.push_str("\n");
-                                for line in code_lines.iter().take(15) {
-                                    content.push_str(line);
-                                    content.push_str("\n");
-                                }
-                                content.push_str("// ... (省略) ...\n");
-                                for line in code_lines.iter().skip(code_lines.len().saturating_sub(5)) {
-                                    content.push_str(line);
-                                    content.push_str("\n");
-                                }
-                                content.push_str("```\n\n");
-                            }
-                        }
-                    }
-                }
-            }
+            let anchor = module.name.replace("::", "_").replace("/", "_").replace("\\", "_").replace(" ", "_");
+            content.push_str(&format!("- [{}](#{})\n", module.name, anchor));
         }
+        content.push_str("\n");
 
         Ok(content)
     }
 
-    /// フローセクションを並列実行用に生成（簡潔に）
+    /// フローセクションを並列実行用に生成（図のみ）
     async fn generate_flows_parallel(
         index: &Index,
         with_diagrams: bool,
@@ -426,21 +625,14 @@ optional = true
         Ok(content)
     }
 
-    /// デプロイセクションを並列実行用に生成（簡潔に）
+    /// デプロイセクションを並列実行用に生成（図のみ）
     async fn generate_deploy_parallel(index: &Index, diagrammer: &Diagrammer) -> Result<String> {
         let mut content = String::from("# デプロイ\n\n");
 
-        content.push_str("## デプロイメント構成\n\n");
+        content.push_str("## デプロイメント構成図\n\n");
         let diagram = diagrammer.generate_diagram(index, "deployment")?;
         if diagram.format == "mermaid" {
             content.push_str(&format!("```mermaid\n{}\n```\n\n", diagram.content));
-        }
-
-        if !index.entrypoints.is_empty() {
-            content.push_str("## エントリーポイント\n\n");
-            for ep in index.entrypoints.iter().take(10) {
-                content.push_str(&format!("- `{}`\n", ep.display()));
-            }
         }
 
         Ok(content)
