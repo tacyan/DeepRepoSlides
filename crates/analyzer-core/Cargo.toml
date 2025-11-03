@@ -1,0 +1,29 @@
+[package]
+name = "analyzer-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+walkdir = { workspace = true }
+regex = { workspace = true }
+git2 = { workspace = true }
+uuid = { workspace = true }
+
+# 設定
+config = { path = "../config" }
+
+# 検索（オプション）
+tantivy = { workspace = true, optional = true }
+
+[features]
+default = []
+tantivy-search = ["tantivy"]
+

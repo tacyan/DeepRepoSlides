@@ -1,0 +1,47 @@
+[project]
+name = "MyService"
+repo_path = "."
+include = ["src/**/*.ts", "src/**/*.js", "packages/**", "apps/**"]
+exclude = ["**/node_modules/**", "**/dist/**", "**/.git/**", "**/target/**"]
+
+[analysis]
+languages = ["ts", "js", "py", "go", "rs"]
+max_file_kb = 512
+infer_entrypoints = []
+
+[analysis.diagrams]
+types = ["module-graph", "call-graph", "sequence", "deployment"]
+renderer = "mermaid"
+
+[summarization]
+mode = "auto"
+model = null
+temperature = 0.2
+style = "concise-ja"
+
+[index]
+provider = "tantivy"
+chunk_tokens = 800
+chunk_overlap = 120
+
+[site]
+flavor = "mdbook"
+out_dir = "./out/wiki"
+
+[slides]
+flavor = "mdbook-reveal"
+out_dir = "./out/slides"
+
+[publish]
+mode = "docs"
+branch = "gh-pages"
+
+[security]
+offline = true
+pii_redaction = true
+
+[env]
+# 環境変数の例（実際の値は環境変数から読み込む）
+# OPENAI_API_KEY = "..."
+# ANTHROPIC_API_KEY = "..."
+

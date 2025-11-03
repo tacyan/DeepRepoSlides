@@ -1,0 +1,49 @@
+[workspace]
+members = [
+    "crates/config",
+    "crates/mcp-server",
+    "crates/analyzer-core",
+    "crates/summarizer",
+    "crates/diagrammer",
+    "crates/site-mdbook",
+    "crates/slides",
+    "crates/publisher-ghpages",
+    "apps/cli",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["DeepRepoSlides Contributors"]
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+# 標準ライブラリ系
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.35", features = ["full"] }
+anyhow = "1.0"
+thiserror = "1.0"
+
+# ファイルシステム/パス
+walkdir = "2.4"
+regex = "1.10"
+
+# Git
+git2 = "0.18"
+
+# 設定ファイル
+toml = "0.8"
+
+# ログ
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# 検索/RAG（オプション）
+tantivy = "0.20"
+
+# その他
+uuid = { version = "1.6", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+

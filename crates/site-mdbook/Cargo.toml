@@ -1,0 +1,21 @@
+[package]
+name = "site-mdbook"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+# 設定
+config = { path = "../config" }
+analyzer-core = { path = "../analyzer-core" }
+summarizer = { path = "../summarizer" }
+diagrammer = { path = "../diagrammer" }
+

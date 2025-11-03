@@ -1,0 +1,83 @@
+# Rust
+/target/
+**/*.rs.bk
+# Cargo.lock はワークスペースルートでは含める（バイナリプロジェクトのため）
+
+# Rust ビルド成果物
+**/*.pdb
+**/*.rlib
+**/*.dll
+**/*.so
+**/*.dylib
+**/*.exe
+**/*.d
+**/*.rmeta
+*.orig
+*.rej
+
+# Rust キャッシュ
+.rustc_info.json
+
+# 出力ディレクトリ
+/out/
+/docs/
+/book/
+/.mdbook/
+
+# mdBook ビルド出力
+**/book/
+**/.mdbook/
+
+# 設定ファイル（機密情報含む可能性）
+*.local.toml
+.env
+.env.local
+.env.*.local
+
+# インデックス/検索関連
+*.index
+*.idx
+*.tantivy
+
+# テスト/カバレッジ
+coverage/
+*.gcda
+*.gcno
+*.profdata
+*.lcov
+tarpaulin-report.html
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+*.sublime-project
+*.sublime-workspace
+
+# OS
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.AppleDouble
+.LSOverride
+
+# 一時ファイル
+*.tmp
+*.log
+*.bak
+*.backup
+
+# GitHub Actions（ローカル設定）
+.github/workflows/*.local.yml
+
+# その他
+*.cache
+.cache/
+*.lock.bak
