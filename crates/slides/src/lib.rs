@@ -102,9 +102,38 @@ impl SlideBuilder {
         // SUMMARY.mdを生成
         self.generate_reveal_summary(&src_dir, sections)?;
 
-        // スライドコンテンツを生成
+        // スライドコンテンツを並列生成（16並列対応）
+        // インデックスと設定をクローンして各セクションで使用可能にする
+        let index_clone = index.clone();
+        let config_clone = self.config.clone();
+        
+        // 各セクションの生成を並列実行
+        let mut section_handles = Vec::new();
         for section in sections {
-            self.generate_reveal_section(index, &src_dir, section).await?;
+            let section = section.clone();
+            let src_dir_clone = src_dir.clone();
+            let index_for_section = index_clone.clone();
+            let config_for_section = config_clone.clone();
+            
+            let handle = tokio::spawn(async move {
+                // 各セクション用に新しいインスタンスを作成
+                let summarizer = Summarizer::new(config_for_section.clone());
+                let diagrammer = Diagrammer::new(config_for_section.clone());
+                
+                Self::generate_reveal_section_parallel(
+                    &index_for_section,
+                    &src_dir_clone,
+                    &section,
+                    &summarizer,
+                    &diagrammer,
+                ).await
+            });
+            section_handles.push(handle);
+        }
+        
+        // すべてのセクションを並列実行して結果を収集
+        for handle in section_handles {
+            handle.await??;
         }
 
         // mdbook buildを実行
@@ -146,12 +175,46 @@ impl SlideBuilder {
     ) -> Result<SlideResult> {
         info!("Marpでスライドをビルド中...");
 
-        let mut files = Vec::new();
-        let marp_content = self.generate_marp_content(index, sections).await?;
+        // Marpコンテンツを並列生成（16並列対応）
+        let index_clone = index.clone();
+        let config_clone = self.config.clone();
+        
+        // 各セクションの生成を並列実行
+        let mut section_handles = Vec::new();
+        for section in sections {
+            let section = section.clone();
+            let index_for_section = index_clone.clone();
+            let config_for_section = config_clone.clone();
+            
+            let handle = tokio::spawn(async move {
+                let summarizer = Summarizer::new(config_for_section.clone());
+                let diagrammer = Diagrammer::new(config_for_section.clone());
+                
+                match section.as_str() {
+                    "overview" => Self::generate_overview_slide_parallel(&index_for_section, &summarizer, &diagrammer).await,
+                    "architecture" => Self::generate_architecture_slide_parallel(&index_for_section, &summarizer, &diagrammer).await,
+                    "modules" => Self::generate_modules_slide_parallel(&index_for_section, &summarizer).await,
+                    "flows" => Self::generate_flows_slide_parallel(&index_for_section, &diagrammer).await,
+                    "deploy" => Self::generate_deploy_slide_parallel(&index_for_section, &diagrammer).await,
+                    _ => Ok(format!("# {}\n\nセクションの内容\n", section)),
+                }
+            });
+            section_handles.push(handle);
+        }
+        
+        // すべてのセクションを並列実行して結果を収集
+        let mut marp_content = String::from("---\nmarp: true\ntheme: default\n---\n\n");
+        for handle in section_handles {
+            let section_content = handle.await??;
+            marp_content.push_str(&section_content);
+            marp_content.push_str("\n");
+        }
+        
         let marp_file = out_dir.join("slides.md");
         fs::write(&marp_file, marp_content)?;
 
         // Marp CLIでビルド
+        let mut files = Vec::new();
         for format in export {
             let output_file = match format.as_str() {
                 "html" => out_dir.join("slides.html"),
@@ -177,19 +240,33 @@ impl SlideBuilder {
                 }
                 "pptx" => {
                     cmd.arg("--pptx");
+                    // .pptx形式の生成を確実にするため、エラーハンドリングを改善
+                    cmd.arg("--allow-local-files");
                 }
                 _ => {}
             }
 
             let output = cmd.output().with_context(|| {
-                "Marp CLIが見つかりません。インストールしてください: npm install -g @marp-team/marp-cli"
+                format!("Marp CLIが見つかりません。インストールしてください: npm install -g @marp-team/marp-cli")
             })?;
 
-            if output.status.success() && output_file.exists() {
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                warn!("Marp CLIエラー (形式: {}): {}", format, stderr);
+                // .pptx形式の場合は、エラーがあっても続行
+                if format != "pptx" {
+                    return Err(anyhow::anyhow!("Marp CLIビルドエラー (形式: {}): {}", format, stderr));
+                }
+            }
+
+            if output_file.exists() {
                 files.push(SlideFile {
                     format: format.clone(),
                     path: output_file,
                 });
+            } else if format == "pptx" {
+                // .pptx形式の生成に失敗した場合の警告
+                warn!("スライドファイルが生成されませんでした: {:?}", output_file);
             }
         }
 
@@ -242,7 +319,32 @@ default-theme = "black"
         Ok(())
     }
 
-    /// reveal用のセクションを生成
+    /// reveal用のセクションを並列実行用に生成（静的メソッド）
+    async fn generate_reveal_section_parallel(
+        index: &Index,
+        src_dir: &Path,
+        section: &str,
+        summarizer: &Summarizer,
+        diagrammer: &Diagrammer,
+    ) -> Result<()> {
+        let content = match section {
+            "overview" => Self::generate_overview_slide_parallel(index, summarizer, diagrammer).await?,
+            "architecture" => Self::generate_architecture_slide_parallel(index, summarizer, diagrammer).await?,
+            "modules" => Self::generate_modules_slide_parallel(index, summarizer).await?,
+            "flows" => Self::generate_flows_slide_parallel(index, diagrammer).await?,
+            "deploy" => Self::generate_deploy_slide_parallel(index, diagrammer).await?,
+            _ => format!("# {}\n\nセクションの内容\n", section),
+        };
+
+        let file_path = src_dir.join(format!("{}.md", section));
+        fs::write(&file_path, content)
+            .with_context(|| format!("セクションファイルの書き込みに失敗しました: {:?}", file_path))?;
+
+        Ok(())
+    }
+
+    /// reveal用のセクションを生成（非並列実行用、後方互換性のため保持）
+    #[allow(dead_code)] // 後方互換性のため保持
     async fn generate_reveal_section(
         &self,
         index: &Index,
@@ -265,7 +367,212 @@ default-theme = "black"
         Ok(())
     }
 
-    /// 概要スライドを生成
+    /// 概要スライドを並列実行用に生成（静的メソッド）
+    async fn generate_overview_slide_parallel(
+        index: &Index,
+        summarizer: &Summarizer,
+        diagrammer: &Diagrammer,
+    ) -> Result<String> {
+        let mut content = String::new();
+        
+        // タイトルスライド
+        content.push_str("---\n");
+        content.push_str(&format!("# {}\n\n", index.repo_path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("プロジェクト")));
+        
+        // リポジトリ要約を取得
+        let summary_result = summarizer.summarize(index, "repo", "", "concise-ja").await?;
+        let summary_lines: Vec<&str> = summary_result.content_md.lines().take(5).collect();
+        for line in summary_lines {
+            if !line.trim().is_empty() {
+                content.push_str(line);
+                content.push_str("\n");
+            }
+        }
+        content.push_str("\n");
+        
+        content.push_str(&format!(
+            "📊 **統計**: {}ファイル、{}言語、{}モジュール\n",
+            index.stats.files,
+            index.stats.languages.len(),
+            index.stats.modules
+        ));
+        content.push_str("---\n\n");
+        
+        // 全体構成図
+        content.push_str("---\n");
+        content.push_str("## 全体構成\n\n");
+        let diagram = diagrammer.generate_diagram(index, "module-graph")?;
+        if diagram.format == "mermaid" {
+            content.push_str(&format!("```mermaid\n{}\n```\n", diagram.content));
+        }
+        content.push_str("---\n\n");
+
+        Ok(content)
+    }
+
+    /// アーキテクチャスライドを並列実行用に生成（静的メソッド）
+    async fn generate_architecture_slide_parallel(
+        index: &Index,
+        summarizer: &Summarizer,
+        diagrammer: &Diagrammer,
+    ) -> Result<String> {
+        let mut content = String::new();
+
+        content.push_str("---\n");
+        content.push_str("## アーキテクチャ概要\n");
+        content.push_str("---\n\n");
+        
+        // アーキテクチャ要約を取得
+        let summary_result = summarizer.summarize(index, "repo", "", "concise-ja").await?;
+        let summary_lines: Vec<&str> = summary_result.content_md.lines().take(10).collect();
+        for line in summary_lines {
+            if !line.trim().is_empty() {
+                content.push_str(line);
+                content.push_str("\n");
+            }
+        }
+        content.push_str("\n---\n\n");
+
+        // モジュールグラフ図
+        content.push_str("---\n");
+        content.push_str("### モジュール構成図\n\n");
+        let diagram = diagrammer.generate_diagram(index, "module-graph")?;
+        if diagram.format == "mermaid" {
+            content.push_str(&format!("```mermaid\n{}\n```\n", diagram.content));
+        }
+        content.push_str("---\n\n");
+
+        // 主要モジュール一覧
+        content.push_str("---\n");
+        content.push_str("### 主要モジュール\n\n");
+        for (i, module) in index.modules.iter().take(10).enumerate() {
+            content.push_str(&format!("{}. **{}**\n", i + 1, module.name));
+            content.push_str(&format!("   - パス: `{}`\n", module.path.display()));
+            content.push_str(&format!("   - 言語: {}\n", module.language));
+            if !module.dependencies.is_empty() {
+                content.push_str(&format!("   - 依存: {}\n", module.dependencies.join(", ")));
+            }
+            content.push_str("\n");
+        }
+        content.push_str("---\n\n");
+
+        Ok(content)
+    }
+
+    /// モジュールスライドを並列実行用に生成（静的メソッド）
+    async fn generate_modules_slide_parallel(
+        index: &Index,
+        summarizer: &Summarizer,
+    ) -> Result<String> {
+        let mut content = String::new();
+
+        content.push_str("---\n");
+        content.push_str("## モジュール詳細\n");
+        content.push_str("---\n\n");
+
+        // モジュールごとにスライドを生成
+        for (idx, module) in index.modules.iter().take(20).enumerate() {
+            if idx > 0 {
+                content.push_str("---\n\n");
+            }
+            
+            content.push_str(&format!("### {}\n\n", module.name));
+            content.push_str(&format!("**パス**: `{}`\n\n", module.path.display()));
+            content.push_str(&format!("**言語**: {}\n\n", module.language));
+            
+            if !module.dependencies.is_empty() {
+                content.push_str("**依存関係**:\n");
+                for dep in &module.dependencies {
+                    content.push_str(&format!("- `{}`\n", dep));
+                }
+                content.push_str("\n");
+            }
+            
+            // モジュールの要約を生成
+            let summary_result = summarizer
+                .summarize(index, "module", &module.path.to_string_lossy(), "concise-ja")
+                .await?;
+            let summary_lines: Vec<&str> = summary_result.content_md.lines().take(10).collect();
+            for line in summary_lines {
+                if !line.trim().is_empty() {
+                    content.push_str(line);
+                    content.push_str("\n");
+                }
+            }
+            content.push_str("\n");
+        }
+
+        Ok(content)
+    }
+
+    /// フロースライドを並列実行用に生成（静的メソッド）
+    async fn generate_flows_slide_parallel(
+        index: &Index,
+        diagrammer: &Diagrammer,
+    ) -> Result<String> {
+        let mut content = String::new();
+
+        content.push_str("---\n");
+        content.push_str("## システムフロー\n");
+        content.push_str("---\n\n");
+
+        // シーケンス図
+        content.push_str("---\n");
+        content.push_str("### シーケンス図\n\n");
+        let diagram = diagrammer.generate_diagram(index, "sequence")?;
+        if diagram.format == "mermaid" {
+            content.push_str(&format!("```mermaid\n{}\n```\n", diagram.content));
+        }
+        content.push_str("---\n\n");
+
+        // コールグラフ
+        content.push_str("---\n");
+        content.push_str("### コールグラフ\n\n");
+        let diagram = diagrammer.generate_diagram(index, "call-graph")?;
+        if diagram.format == "mermaid" {
+            content.push_str(&format!("```mermaid\n{}\n```\n", diagram.content));
+        }
+        content.push_str("---\n\n");
+
+        Ok(content)
+    }
+
+    /// デプロイスライドを並列実行用に生成（静的メソッド）
+    async fn generate_deploy_slide_parallel(
+        index: &Index,
+        diagrammer: &Diagrammer,
+    ) -> Result<String> {
+        let mut content = String::new();
+
+        content.push_str("---\n");
+        content.push_str("## デプロイメント構成\n");
+        content.push_str("---\n\n");
+
+        // デプロイメント図
+        let diagram = diagrammer.generate_diagram(index, "deployment")?;
+        if diagram.format == "mermaid" {
+            content.push_str(&format!("```mermaid\n{}\n```\n", diagram.content));
+        }
+        content.push_str("\n---\n\n");
+
+        // エントリーポイント
+        content.push_str("---\n");
+        content.push_str("### エントリーポイント\n\n");
+        if !index.entrypoints.is_empty() {
+            for ep in &index.entrypoints {
+                content.push_str(&format!("- `{}`\n", ep.display()));
+            }
+        } else {
+            content.push_str("エントリーポイントが見つかりませんでした。\n");
+        }
+        content.push_str("\n---\n\n");
+
+        Ok(content)
+    }
+
+    /// 概要スライドを生成（非並列実行用、後方互換性のため保持）
     async fn generate_overview_slide(&self, index: &Index) -> Result<String> {
         let mut content = String::new();
 
@@ -360,7 +667,8 @@ default-theme = "black"
         Ok(content)
     }
 
-    /// Marpコンテンツを生成
+    /// Marpコンテンツを生成（非並列実行用、後方互換性のため保持）
+    #[allow(dead_code)] // 後方互換性のため保持
     async fn generate_marp_content(&self, index: &Index, sections: &[String]) -> Result<String> {
         let mut content = String::from("---\nmarp: true\ntheme: default\n---\n\n");
 
