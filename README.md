@@ -25,26 +25,20 @@ cargo build --release
 Cursor内で以下のコマンドを実行してください：
 
 ```bash
-# 1. swarm-mcp-liteのセッションを起動（16ペイン）
-swarm-mcp-lite swarm
+# 1. プロジェクトをビルド
+cargo build --release
 
-# 2. 16個のペインでMCPサーバーを起動
-for i in {0..15}; do
-  tmux send-keys -t swarm-multiagent:0.$i "cd $(pwd) && export RUN_AS_MCP=1 && ./target/release/deeprepo-slides-mcp" C-m
-  sleep 0.1
-done
-
-# 3. 設定ファイルを作成（初回のみ）
+# 2. 設定ファイルを作成（初回のみ）
 cat > deeprepo.toml << 'EOF'
 [project]
 name = "DeepRepoSlides"
-repo_path = "."
+repo-path = "."
 include = ["**/*.rs", "**/*.toml", "**/*.md"]
 exclude = ["**/target/**", "**/.git/**", "**/node_modules/**"]
 
 [analysis]
 languages = ["rs"]
-max_file_kb = 512
+max-file-kb = 512
 
 [analysis.diagrams]
 types = ["module-graph", "call-graph"]
@@ -56,23 +50,30 @@ style = "concise-ja"
 
 [site]
 flavor = "mdbook"
-out_dir = "./out/wiki"
+out-dir = "./out/wiki"
 
 [slides]
 flavor = "mdbook-reveal"
-out_dir = "./out/slides"
+out-dir = "./out/slides"
 
 [publish]
 mode = "docs"
 branch = "gh-pages"
 EOF
 
-# 4. このリポジトリをインデックス化
-./target/release/deeprepo-slides-mcp index --repo . -c deeprepo.toml
-
-# 5. Wikiとスライドを生成
+# 3. このリポジトリをインデックス化してWikiを生成（16並列対応）
 ./target/release/deeprepo-slides-mcp build-all -c deeprepo.toml
+
+# 4. 生成されたWikiを確認
+open ./out/wiki/book/index.html  # macOS
+# または
+xdg-open ./out/wiki/book/index.html  # Linux
 ```
+
+**16並列実行について:**
+- Wiki生成機能は自動的に各セクションを並列実行します
+- 複数のセクション（overview, architecture, modules, flows, deploy, faq）が同時に生成されます
+- パフォーマンスが大幅に向上します
 
 ### 方法1: swarm-mcp-liteで16並列実行（推奨）
 

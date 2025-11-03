@@ -1,0 +1,29 @@
+[project]
+name = "DeepRepoSlides"
+repo-path = "."
+include = ["**/*.rs", "**/*.toml", "**/*.md"]
+exclude = ["**/target/**", "**/.git/**", "**/node_modules/**"]
+
+[analysis]
+languages = ["rs"]
+max-file-kb = 512
+
+[analysis.diagrams]
+types = ["module-graph", "call-graph"]
+renderer = "mermaid"
+
+[summarization]
+mode = "auto"
+style = "concise-ja"
+
+[site]
+flavor = "mdbook"
+out-dir = "./out/wiki"
+
+[slides]
+flavor = "mdbook-reveal"
+out-dir = "./out/slides"
+
+[publish]
+mode = "docs"
+branch = "gh-pages"

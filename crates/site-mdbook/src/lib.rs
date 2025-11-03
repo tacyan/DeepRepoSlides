@@ -32,7 +32,9 @@ use diagrammer::Diagrammer;
 /// mdBookビルダー
 pub struct MdBookBuilder {
     config: Config,
+    #[allow(dead_code)] // 後方互換性のため保持（非並列実行時のgenerate_sectionメソッドで使用）
     summarizer: Summarizer,
+    #[allow(dead_code)] // 後方互換性のため保持（非並列実行時のgenerate_sectionメソッドで使用）
     diagrammer: Diagrammer,
 }
 
@@ -81,10 +83,41 @@ impl MdBookBuilder {
         // SUMMARY.mdを生成
         self.generate_summary(&src_dir, toc)?;
 
-        // 各章を生成
-        let mut pages = 0;
+        // 各章を並列生成（16並列対応）
+        // インデックスと設定をクローンして各セクションで使用可能にする
+        let index_clone = index.clone();
+        let config_clone = self.config.clone();
+        
+        // 各セクションの生成を並列実行
+        let mut section_handles = Vec::new();
         for section in toc {
-            let page_count = self.generate_section(index, &src_dir, section, with_diagrams).await?;
+            let section = section.clone();
+            let src_dir_clone = src_dir.clone();
+            let with_diagrams = with_diagrams;
+            let index_for_section = index_clone.clone();
+            let config_for_section = config_clone.clone();
+            
+            let handle = tokio::spawn(async move {
+                // 各セクション用に新しいインスタンスを作成
+                let summarizer = Summarizer::new(config_for_section.clone());
+                let diagrammer = Diagrammer::new(config_for_section.clone());
+                
+                Self::generate_section_parallel(
+                    &index_for_section,
+                    &src_dir_clone,
+                    &section,
+                    with_diagrams,
+                    &summarizer,
+                    &diagrammer,
+                ).await
+            });
+            section_handles.push(handle);
+        }
+        
+        // すべてのセクションを並列実行して結果を収集
+        let mut pages = 0;
+        for handle in section_handles {
+            let page_count = handle.await??;
             pages += page_count;
         }
 
@@ -118,6 +151,9 @@ build-dir = "book"
 [output.html]
 default-theme = "navy"
 preferred-dark-theme = "navy"
+
+[output.reveal]
+optional = true
 "#,
             self.config.project.name
         );
@@ -168,6 +204,48 @@ preferred-dark-theme = "navy"
         }
     }
 
+    /// セクションを並列実行用に生成（静的メソッド）
+    /// 
+    /// # 引数
+    /// * `index` - インデックス
+    /// * `src_dir` - ソースディレクトリ
+    /// * `section` - セクション名
+    /// * `with_diagrams` - 図を含めるか
+    /// * `summarizer` - サマライザー
+    /// * `diagrammer` - ダイアグラマー
+    /// 
+    /// # 戻り値
+    /// * `Result<usize>` - 生成されたページ数、またはエラー
+    async fn generate_section_parallel(
+        index: &Index,
+        src_dir: &Path,
+        section: &str,
+        with_diagrams: bool,
+        summarizer: &Summarizer,
+        diagrammer: &Diagrammer,
+    ) -> Result<usize> {
+        let content = match section {
+            "overview" => Self::generate_overview_parallel(index, summarizer).await?,
+            "architecture" => Self::generate_architecture_parallel(index, with_diagrams, diagrammer).await?,
+            "modules" => Self::generate_modules_parallel(index, summarizer).await?,
+            "flows" => Self::generate_flows_parallel(index, with_diagrams, diagrammer).await?,
+            "deploy" => Self::generate_deploy_parallel(index, diagrammer).await?,
+            "faq" => Self::generate_faq_parallel(index).await?,
+            _ => format!("# {}\n\nセクションの内容\n", section),
+        };
+
+        let page_count = match section {
+            "modules" => index.modules.len().max(1),
+            _ => 1,
+        };
+
+        let file_path = src_dir.join(format!("{}.md", section));
+        fs::write(&file_path, content)
+            .with_context(|| format!("セクションファイルの書き込みに失敗しました: {:?}", file_path))?;
+
+        Ok(page_count)
+    }
+
     /// セクションを生成
     /// 
     /// # 引数
@@ -205,6 +283,151 @@ preferred-dark-theme = "navy"
             .with_context(|| format!("セクションファイルの書き込みに失敗しました: {:?}", file_path))?;
 
         Ok(page_count)
+    }
+
+    /// 概要セクションを並列実行用に生成
+    async fn generate_overview_parallel(index: &Index, summarizer: &Summarizer) -> Result<String> {
+        let summary_result = summarizer
+            .summarize(index, "repo", "", "concise-ja")
+            .await?;
+
+        Ok(summary_result.content_md)
+    }
+
+    /// アーキテクチャセクションを並列実行用に生成
+    async fn generate_architecture_parallel(
+        index: &Index,
+        with_diagrams: bool,
+        diagrammer: &Diagrammer,
+    ) -> Result<String> {
+        let mut content = String::from("# アーキテクチャ\n\n");
+
+        content.push_str("## システム構成\n\n");
+        content.push_str(&format!(
+            "このリポジトリは{}ファイル、{}言語、{}モジュールで構成されています。\n\n",
+            index.stats.files,
+            index.stats.languages.len(),
+            index.stats.modules
+        ));
+
+        if with_diagrams {
+            content.push_str("## モジュールグラフ\n\n");
+            let diagram = diagrammer.generate_diagram(index, "module-graph")?;
+            if diagram.format == "mermaid" {
+                content.push_str(&format!("```mermaid\n{}\n```\n\n", diagram.content));
+            }
+        }
+
+        content.push_str("## 主要コンポーネント\n\n");
+        for module in &index.modules {
+            content.push_str(&format!("- **{}** (`{}`)\n", module.name, module.path.display()));
+        }
+
+        Ok(content)
+    }
+
+    /// モジュールセクションを並列実行用に生成
+    async fn generate_modules_parallel(index: &Index, summarizer: &Summarizer) -> Result<String> {
+        let mut content = String::from("# モジュール\n\n");
+
+        for module in &index.modules {
+            content.push_str(&format!("## {}\n\n", module.name));
+            content.push_str(&format!("パス: `{}`\n\n", module.path.display()));
+            content.push_str(&format!("言語: {}\n\n", module.language));
+
+            if !module.dependencies.is_empty() {
+                content.push_str("### 依存関係\n\n");
+                for dep in &module.dependencies {
+                    content.push_str(&format!("- `{}`\n", dep));
+                }
+                content.push_str("\n");
+            }
+
+            // モジュールの要約を生成
+            let summary_result = summarizer
+                .summarize(
+                    index,
+                    "module",
+                    &module.path.to_string_lossy(),
+                    "concise-ja",
+                )
+                .await?;
+            content.push_str(&summary_result.content_md);
+            content.push_str("\n\n");
+        }
+
+        Ok(content)
+    }
+
+    /// フローセクションを並列実行用に生成
+    async fn generate_flows_parallel(
+        index: &Index,
+        with_diagrams: bool,
+        diagrammer: &Diagrammer,
+    ) -> Result<String> {
+        let mut content = String::from("# フロー\n\n");
+
+        if with_diagrams {
+            content.push_str("## シーケンス図\n\n");
+            let diagram = diagrammer.generate_diagram(index, "sequence")?;
+            if diagram.format == "mermaid" {
+                content.push_str(&format!("```mermaid\n{}\n```\n\n", diagram.content));
+            }
+
+            content.push_str("## コールグラフ\n\n");
+            let diagram = diagrammer.generate_diagram(index, "call-graph")?;
+            if diagram.format == "mermaid" {
+                content.push_str(&format!("```mermaid\n{}\n```\n\n", diagram.content));
+            }
+        }
+
+        Ok(content)
+    }
+
+    /// デプロイセクションを並列実行用に生成
+    async fn generate_deploy_parallel(index: &Index, diagrammer: &Diagrammer) -> Result<String> {
+        let mut content = String::from("# デプロイ\n\n");
+
+        content.push_str("## デプロイメント構成\n\n");
+
+        // デプロイメント図を生成
+        let diagram = diagrammer.generate_diagram(index, "deployment")?;
+        if diagram.format == "mermaid" {
+            content.push_str(&format!("```mermaid\n{}\n```\n\n", diagram.content));
+        }
+
+        content.push_str("## エントリーポイント\n\n");
+        for ep in &index.entrypoints {
+            content.push_str(&format!("- `{}`\n", ep.display()));
+        }
+
+        Ok(content)
+    }
+
+    /// FAQセクションを並列実行用に生成
+    async fn generate_faq_parallel(index: &Index) -> Result<String> {
+        let mut content = String::from("# FAQ\n\n");
+
+        content.push_str("## よくある質問\n\n");
+        content.push_str("### このリポジトリは何ですか？\n\n");
+        content.push_str(&format!(
+            "{}ファイル、{}言語、{}モジュールを含むリポジトリです。\n\n",
+            index.stats.files,
+            index.stats.languages.len(),
+            index.stats.modules
+        ));
+
+        content.push_str("### どのように始めますか？\n\n");
+        if !index.entrypoints.is_empty() {
+            content.push_str("エントリーポイント:\n");
+            for ep in &index.entrypoints {
+                content.push_str(&format!("- `{}`\n", ep.display()));
+            }
+        } else {
+            content.push_str("エントリーポイントが見つかりませんでした。\n");
+        }
+
+        Ok(content)
     }
 
     /// 概要セクションを生成
