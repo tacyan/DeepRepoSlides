@@ -286,13 +286,25 @@ optional = true
         Ok(page_count)
     }
 
-    /// 概要セクションを並列実行用に生成
+    /// 概要セクションを並列実行用に生成（よりわかりやすく）
     async fn generate_overview_parallel(index: &Index, summarizer: &Summarizer) -> Result<String> {
         let summary_result = summarizer
-            .summarize(index, "repo", "", "concise-ja")
+            .summarize(index, "repo", "", "detailed-ja")
             .await?;
 
-        Ok(summary_result.content_md)
+        let mut content = String::from("# 概要\n\n");
+        content.push_str("このページでは、リポジトリ全体の概要を説明します。\n\n");
+        content.push_str(&summary_result.content_md);
+        
+        // 統計情報をよりわかりやすく表示
+        content.push_str("\n## 統計情報\n\n");
+        content.push_str(&format!("- **ファイル数**: {}個\n", index.stats.files));
+        content.push_str(&format!("- **使用言語**: {}\n", index.stats.languages.join(", ")));
+        content.push_str(&format!("- **モジュール数**: {}個\n\n", index.stats.modules));
+        
+        content.push_str("これらのファイルやモジュールがどのように動作するか、次のセクションで詳しく見ていきます。\n\n");
+
+        Ok(content)
     }
 
     /// アーキテクチャセクションを並列実行用に生成
@@ -327,15 +339,16 @@ optional = true
         Ok(content)
     }
 
-    /// モジュールセクションを並列実行用に生成
+    /// モジュールセクションを並列実行用に生成（メソッド単位での詳細な解説を含む）
     async fn generate_modules_parallel(index: &Index, summarizer: &Summarizer) -> Result<String> {
         let mut content = String::from("# モジュール\n\n");
+        content.push_str("このセクションでは、各モジュールとそのメソッドについて詳しく説明します。\n\n");
 
         for module in &index.modules {
             content.push_str(&format!("## {}\n\n", module.name));
-            content.push_str(&format!("パス: `{}`\n\n", module.path.display()));
-            content.push_str(&format!("言語: {}\n\n", module.language));
-
+            content.push_str(&format!("**パス**: `{}`\n\n", module.path.display()));
+            content.push_str(&format!("**言語**: {}\n\n", module.language));
+            
             if !module.dependencies.is_empty() {
                 content.push_str("### 依存関係\n\n");
                 for dep in &module.dependencies {
@@ -343,18 +356,67 @@ optional = true
                 }
                 content.push_str("\n");
             }
-
+            
             // モジュールの要約を生成
             let summary_result = summarizer
                 .summarize(
                     index,
                     "module",
                     &module.path.to_string_lossy(),
-                    "concise-ja",
+                    "detailed-ja",
                 )
                 .await?;
             content.push_str(&summary_result.content_md);
             content.push_str("\n\n");
+            
+            // ファイル情報を取得してメソッドを抽出
+            if let Some(file_info) = index.files.iter().find(|f| f.path == module.path) {
+                if let Some(file_content) = &file_info.content {
+                    let methods = summarizer.extract_methods_detailed(file_content, &file_info.language);
+                    
+                    if !methods.is_empty() {
+                        content.push_str("### 主要な関数・メソッド\n\n");
+                        content.push_str("このモジュールには以下の関数やメソッドが含まれています：\n\n");
+                        
+                        for method in methods.iter().take(15) {
+                            content.push_str(&format!("#### {}\n\n", method.name));
+                            
+                            // わかりやすい説明
+                            if !method.documentation.is_empty() {
+                                content.push_str(&format!("**{0}**とは、{1}\n\n", method.name, method.documentation));
+                            } else {
+                                content.push_str(&format!("**{0}**関数について説明します。\n\n", method.name));
+                            }
+                            
+                            // コードスニペット
+                            let code_lines: Vec<&str> = method.code_snippet.lines().collect();
+                            if code_lines.len() <= 25 {
+                                content.push_str("```");
+                                content.push_str(&method.language);
+                                content.push_str("\n");
+                                content.push_str(&method.code_snippet);
+                                content.push_str("\n```\n\n");
+                            } else {
+                                // 重要な部分だけ表示
+                                content.push_str("```");
+                                content.push_str(&method.language);
+                                content.push_str("\n");
+                                for line in code_lines.iter().take(10) {
+                                    content.push_str(line);
+                                    content.push_str("\n");
+                                }
+                                content.push_str("// ... (省略) ...\n");
+                                for line in code_lines.iter().skip(code_lines.len().saturating_sub(5)) {
+                                    content.push_str(line);
+                                    content.push_str("\n");
+                                }
+                                content.push_str("```\n\n");
+                            }
+                            content.push_str("\n");
+                        }
+                    }
+                }
+            }
         }
 
         Ok(content)

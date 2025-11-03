@@ -345,44 +345,248 @@ impl Summarizer {
         notes.join("\n")
     }
 
-    /// コンテンツを要約
-    async fn summarize_content(&self, content: &str, language: &str) -> String {
-        // 簡易的な要約（関数/クラス名を抽出）
-        let mut summary = String::new();
+    /// メソッド単位での詳細な解説を生成
+    /// 
+    /// # 引数
+    /// * `content` - ファイル内容
+    /// * `language` - 言語
+    /// 
+    /// # 戻り値
+    /// * `Vec<MethodInfo>` - メソッド情報のリスト
+    pub fn extract_methods_detailed(&self, content: &str, language: &str) -> Vec<MethodInfo> {
+        let mut methods = Vec::new();
 
         match language {
+            "rs" => {
+                // Rust関数を詳細に抽出
+                let func_re = regex::Regex::new(r"(?:pub\s+)?(?:async\s+)?fn\s+(\w+)\s*\([^)]*\)\s*(?:->\s*[^{]+)?\s*\{").unwrap();
+                for cap in func_re.captures_iter(content) {
+                    if let Some(name) = cap.get(1) {
+                        let func_name = name.as_str();
+                        // 関数の前のコメントを探す
+                        let lines: Vec<&str> = content.lines().collect();
+                        let mut doc = String::new();
+                        for (i, line) in lines.iter().enumerate() {
+                            if line.contains(&format!("fn {}", func_name)) {
+                                // 前の行のコメントを収集
+                                let mut j = i.saturating_sub(1);
+                                while j > 0 && (lines[j].trim_start().starts_with("///") || lines[j].trim().is_empty()) {
+                                    if lines[j].trim_start().starts_with("///") {
+                                        doc.push_str(&lines[j].trim_start().trim_start_matches("///").trim());
+                                        doc.push_str("\n");
+                                    }
+                                    j = j.saturating_sub(1);
+                                }
+                                break;
+                            }
+                        }
+                        
+                        methods.push(MethodInfo {
+                            name: func_name.to_string(),
+                            language: language.to_string(),
+                            documentation: doc.trim().to_string(),
+                            code_snippet: self.extract_method_code(content, func_name, language),
+                        });
+                    }
+                }
+            }
             "ts" | "js" => {
-                // 関数定義を抽出
-                let func_re = regex::Regex::new(r"(?:export\s+)?(?:async\s+)?function\s+(\w+)").unwrap();
-                let funcs: Vec<&str> = func_re
-                    .captures_iter(content)
-                    .filter_map(|cap| cap.get(1))
-                    .map(|m| m.as_str())
-                    .collect();
-                if !funcs.is_empty() {
-                    summary.push_str("主要な関数:\n");
-                    for func in funcs {
-                        summary.push_str(&format!("- `{}`\n", func));
+                // JavaScript/TypeScript関数を詳細に抽出
+                let func_re = regex::Regex::new(r"(?:export\s+)?(?:async\s+)?function\s+(\w+)\s*\([^)]*\)\s*(?::\s*[^{]+)?\s*\{").unwrap();
+                for cap in func_re.captures_iter(content) {
+                    if let Some(name) = cap.get(1) {
+                        let func_name = name.as_str();
+                        let doc = self.infer_function_purpose_simple(func_name);
+                        methods.push(MethodInfo {
+                            name: func_name.to_string(),
+                            language: language.to_string(),
+                            documentation: doc,
+                            code_snippet: self.extract_method_code(content, func_name, language),
+                        });
                     }
                 }
             }
             "py" => {
-                // 関数定義を抽出
-                let func_re = regex::Regex::new(r"def\s+(\w+)").unwrap();
-                let funcs: Vec<&str> = func_re
-                    .captures_iter(content)
-                    .filter_map(|cap| cap.get(1))
-                    .map(|m| m.as_str())
-                    .collect();
-                if !funcs.is_empty() {
-                    summary.push_str("主要な関数:\n");
-                    for func in funcs {
-                        summary.push_str(&format!("- `{}`\n", func));
+                // Python関数を詳細に抽出
+                let func_re = regex::Regex::new(r"def\s+(\w+)\s*\([^)]*\)\s*:").unwrap();
+                for cap in func_re.captures_iter(content) {
+                    if let Some(name) = cap.get(1) {
+                        let func_name = name.as_str();
+                        let doc = self.infer_function_purpose_simple(func_name);
+                        methods.push(MethodInfo {
+                            name: func_name.to_string(),
+                            language: language.to_string(),
+                            documentation: doc,
+                            code_snippet: self.extract_method_code(content, func_name, language),
+                        });
                     }
                 }
             }
-            _ => {
-                summary.push_str("コードの要約を生成しました。");
+            _ => {}
+        }
+
+        methods
+    }
+
+    /// メソッドのコードスニペットを抽出
+    fn extract_method_code(&self, content: &str, method_name: &str, language: &str) -> String {
+        let lines: Vec<&str> = content.lines().collect();
+        let mut in_method = false;
+        let mut brace_count = 0;
+        let mut method_lines = Vec::new();
+        let search_pattern = match language {
+            "rs" => format!("fn {}", method_name),
+            "ts" | "js" => format!("function {}", method_name),
+            "py" => format!("def {}", method_name),
+            _ => method_name.to_string(),
+        };
+
+        for line in &lines {
+            if line.contains(&search_pattern) {
+                in_method = true;
+                brace_count = 0;
+            }
+            
+            if in_method {
+                method_lines.push(*line);
+                
+                // ブレースのカウント（Rust/JS/TS）
+                if language == "rs" || language == "ts" || language == "js" {
+                    brace_count += line.matches('{').count();
+                    brace_count -= line.matches('}').count();
+                    if brace_count == 0 && method_lines.len() > 1 {
+                        break;
+                    }
+                } else if language == "py" {
+                    // Pythonの場合はインデントで判定
+                    if method_lines.len() > 1 {
+                        let first_indent = method_lines[0].len() - method_lines[0].trim_start().len();
+                        let current_indent = line.len() - line.trim_start().len();
+                        if current_indent <= first_indent && !line.trim().is_empty() {
+                            method_lines.pop();
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        method_lines.join("\n")
+    }
+
+    /// 関数の目的を推定（簡易版）
+    fn infer_function_purpose_simple(&self, func_name: &str) -> String {
+        let name_lower = func_name.to_lowercase();
+        
+        // 関数名から目的を推定
+        if name_lower.contains("get") || name_lower.contains("fetch") {
+            "データを取得する関数です。".to_string()
+        } else if name_lower.contains("set") || name_lower.contains("update") {
+            "データを設定または更新する関数です。".to_string()
+        } else if name_lower.contains("create") || name_lower.contains("make") {
+            "新しいオブジェクトやデータを作成する関数です。".to_string()
+        } else if name_lower.contains("delete") || name_lower.contains("remove") {
+            "データを削除する関数です。".to_string()
+        } else if name_lower.contains("parse") || name_lower.contains("convert") {
+            "データを変換または解析する関数です。".to_string()
+        } else if name_lower.contains("validate") || name_lower.contains("check") {
+            "データを検証またはチェックする関数です。".to_string()
+        } else if name_lower.contains("handle") || name_lower.contains("process") {
+            "イベントやデータを処理する関数です。".to_string()
+        } else {
+            format!("`{}`関数の実装です。", func_name)
+        }
+    }
+
+    /// コンテンツを要約（メソッド単位での詳細な解説を含む）
+    async fn summarize_content(&self, content: &str, language: &str) -> String {
+        let mut summary = String::new();
+        
+        // メソッド単位での詳細な解説を生成
+        let methods = self.extract_methods_detailed(content, language);
+        
+        if !methods.is_empty() {
+            summary.push_str("## 主要な関数・メソッド\n\n");
+            for method in methods.iter().take(10) {
+                summary.push_str(&format!("### {}\n\n", method.name));
+                
+                if !method.documentation.is_empty() {
+                    summary.push_str(&format!("**説明**: {}\n\n", method.documentation));
+                }
+                
+                // コードスニペットを追加（短い場合のみ）
+                let code_lines: Vec<&str> = method.code_snippet.lines().collect();
+                if code_lines.len() <= 20 {
+                    summary.push_str("```");
+                    summary.push_str(&method.language);
+                    summary.push_str("\n");
+                    summary.push_str(&method.code_snippet);
+                    summary.push_str("\n```\n\n");
+                } else {
+                    summary.push_str("```");
+                    summary.push_str(&method.language);
+                    summary.push_str("\n");
+                    // 最初の10行と最後の5行を表示
+                    for line in code_lines.iter().take(10) {
+                        summary.push_str(line);
+                        summary.push_str("\n");
+                    }
+                    summary.push_str("// ... (省略) ...\n");
+                    for line in code_lines.iter().skip(code_lines.len().saturating_sub(5)) {
+                        summary.push_str(line);
+                        summary.push_str("\n");
+                    }
+                    summary.push_str("```\n\n");
+                }
+            }
+        } else {
+            // 簡易的な要約（関数/クラス名を抽出）
+            match language {
+                "ts" | "js" => {
+                    let func_re = regex::Regex::new(r"(?:export\s+)?(?:async\s+)?function\s+(\w+)").unwrap();
+                    let funcs: Vec<&str> = func_re
+                        .captures_iter(content)
+                        .filter_map(|cap| cap.get(1))
+                        .map(|m| m.as_str())
+                        .collect();
+                    if !funcs.is_empty() {
+                        summary.push_str("主要な関数:\n");
+                        for func in funcs {
+                            summary.push_str(&format!("- `{}`\n", func));
+                        }
+                    }
+                }
+                "py" => {
+                    let func_re = regex::Regex::new(r"def\s+(\w+)").unwrap();
+                    let funcs: Vec<&str> = func_re
+                        .captures_iter(content)
+                        .filter_map(|cap| cap.get(1))
+                        .map(|m| m.as_str())
+                        .collect();
+                    if !funcs.is_empty() {
+                        summary.push_str("主要な関数:\n");
+                        for func in funcs {
+                            summary.push_str(&format!("- `{}`\n", func));
+                        }
+                    }
+                }
+                "rs" => {
+                    let func_re = regex::Regex::new(r"fn\s+(\w+)").unwrap();
+                    let funcs: Vec<&str> = func_re
+                        .captures_iter(content)
+                        .filter_map(|cap| cap.get(1))
+                        .map(|m| m.as_str())
+                        .collect();
+                    if !funcs.is_empty() {
+                        summary.push_str("主要な関数:\n");
+                        for func in funcs {
+                            summary.push_str(&format!("- `{}`\n", func));
+                        }
+                    }
+                }
+                _ => {
+                    summary.push_str("コードの要約を生成しました。");
+                }
             }
         }
 
@@ -437,6 +641,15 @@ impl Summarizer {
 
         Ok(mermaid)
     }
+}
+
+/// メソッド情報
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MethodInfo {
+    pub name: String,
+    pub language: String,
+    pub documentation: String,
+    pub code_snippet: String,
 }
 
 /// 要約結果

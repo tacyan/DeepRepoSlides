@@ -461,47 +461,80 @@ default-theme = "black"
         Ok(content)
     }
 
-    /// モジュールスライドを並列実行用に生成（静的メソッド）
+    /// モジュールスライドを並列実行用に生成（静的メソッド、1スライド1エッセンス）
     async fn generate_modules_slide_parallel(
         index: &Index,
         summarizer: &Summarizer,
     ) -> Result<String> {
         let mut content = String::new();
 
-        content.push_str("---\n");
-        content.push_str("## モジュール詳細\n");
-        content.push_str("---\n\n");
-
-        // モジュールごとにスライドを生成
-        for (idx, module) in index.modules.iter().take(20).enumerate() {
-            if idx > 0 {
-                content.push_str("---\n\n");
+        // 各モジュールごとに、メソッド単位で1スライド1エッセンスを生成
+        for module in index.modules.iter().take(30) {
+            // モジュールの要約を取得
+            let summary_result = summarizer
+                .summarize(index, "module", &module.path.to_string_lossy(), "detailed-ja")
+                .await?;
+            
+            // ファイル情報を取得してメソッドを抽出
+            if let Some(file_info) = index.files.iter().find(|f| f.path == module.path) {
+                if let Some(file_content) = &file_info.content {
+                    let methods = summarizer.extract_methods_detailed(file_content, &file_info.language);
+                    
+                    // 各メソッドごとに1スライドを作成
+                    for method in methods.iter().take(10) {
+                        content.push_str("---\n");
+                        content.push_str(&format!("## {}\n\n", method.name));
+                        
+                        // わかりやすい説明
+                        if !method.documentation.is_empty() {
+                            content.push_str(&format!("**{0}**とは、{1}\n\n", method.name, method.documentation));
+                        } else {
+                            content.push_str(&format!("**{0}**関数について説明します。\n\n", method.name));
+                        }
+                        
+                        // コードスニペット（短い場合のみ）
+                        let code_lines: Vec<&str> = method.code_snippet.lines().collect();
+                        if code_lines.len() <= 15 {
+                            content.push_str("```");
+                            content.push_str(&method.language);
+                            content.push_str("\n");
+                            content.push_str(&method.code_snippet);
+                            content.push_str("\n```\n\n");
+                        } else {
+                            // 重要な部分だけ表示
+                            content.push_str("```");
+                            content.push_str(&method.language);
+                            content.push_str("\n");
+                            for line in code_lines.iter().take(5) {
+                                content.push_str(line);
+                                content.push_str("\n");
+                            }
+                            content.push_str("// ... (省略) ...\n");
+                            content.push_str("```\n\n");
+                        }
+                        
+                        content.push_str("---\n\n");
+                    }
+                }
             }
             
-            content.push_str(&format!("### {}\n\n", module.name));
+            // モジュール全体の説明スライドも追加
+            if content.is_empty() || !content.ends_with("---\n\n") {
+                content.push_str("---\n");
+            }
+            content.push_str(&format!("## モジュール: {}\n\n", module.name));
             content.push_str(&format!("**パス**: `{}`\n\n", module.path.display()));
             content.push_str(&format!("**言語**: {}\n\n", module.language));
             
-            if !module.dependencies.is_empty() {
-                content.push_str("**依存関係**:\n");
-                for dep in &module.dependencies {
-                    content.push_str(&format!("- `{}`\n", dep));
-                }
-                content.push_str("\n");
-            }
-            
-            // モジュールの要約を生成
-            let summary_result = summarizer
-                .summarize(index, "module", &module.path.to_string_lossy(), "concise-ja")
-                .await?;
-            let summary_lines: Vec<&str> = summary_result.content_md.lines().take(10).collect();
+            // 要約の最初の数行を表示
+            let summary_lines: Vec<&str> = summary_result.content_md.lines().take(5).collect();
             for line in summary_lines {
-                if !line.trim().is_empty() {
+                if !line.trim().is_empty() && !line.starts_with('#') {
                     content.push_str(line);
                     content.push_str("\n");
                 }
             }
-            content.push_str("\n");
+            content.push_str("\n---\n\n");
         }
 
         Ok(content)
