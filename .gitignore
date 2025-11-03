@@ -77,6 +77,11 @@ $RECYCLE.BIN/
 # GitHub Actions（ローカル設定）
 .github/workflows/*.local.yml
 
+# スクリプトファイル（ローカル用）
+*.sh
+improve-repo.sh
+start-mcp-servers.sh
+
 # その他
 *.cache
 .cache/
