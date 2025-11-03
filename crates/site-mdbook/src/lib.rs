@@ -246,7 +246,7 @@ optional = true
         Ok(page_count)
     }
 
-    /// セクションを生成
+    /// セクションを生成（非並列実行用、後方互換性のため保持）
     /// 
     /// # 引数
     /// * `index` - インデックス
@@ -256,6 +256,7 @@ optional = true
     /// 
     /// # 戻り値
     /// * `Result<usize>` - 生成されたページ数、またはエラー
+    #[allow(dead_code)] // 後方互換性のため保持
     async fn generate_section(
         &self,
         index: &Index,
@@ -430,7 +431,8 @@ optional = true
         Ok(content)
     }
 
-    /// 概要セクションを生成
+    /// 概要セクションを生成（非並列実行用、後方互換性のため保持）
+    #[allow(dead_code)] // 後方互換性のため保持
     async fn generate_overview(&self, index: &Index) -> Result<String> {
         let summary_result = self
             .summarizer
@@ -440,7 +442,8 @@ optional = true
         Ok(summary_result.content_md)
     }
 
-    /// アーキテクチャセクションを生成
+    /// アーキテクチャセクションを生成（非並列実行用、後方互換性のため保持）
+    #[allow(dead_code)] // 後方互換性のため保持
     async fn generate_architecture(&self, index: &Index, with_diagrams: bool) -> Result<String> {
         let mut content = String::from("# アーキテクチャ\n\n");
 
@@ -468,7 +471,8 @@ optional = true
         Ok(content)
     }
 
-    /// モジュールセクションを生成
+    /// モジュールセクションを生成（非並列実行用、後方互換性のため保持）
+    #[allow(dead_code)] // 後方互換性のため保持
     async fn generate_modules(&self, index: &Index) -> Result<String> {
         let mut content = String::from("# モジュール\n\n");
 
@@ -502,7 +506,8 @@ optional = true
         Ok(content)
     }
 
-    /// フローセクションを生成
+    /// フローセクションを生成（非並列実行用、後方互換性のため保持）
+    #[allow(dead_code)] // 後方互換性のため保持
     async fn generate_flows(&self, index: &Index, with_diagrams: bool) -> Result<String> {
         let mut content = String::from("# フロー\n\n");
 
@@ -523,7 +528,8 @@ optional = true
         Ok(content)
     }
 
-    /// デプロイセクションを生成
+    /// デプロイセクションを生成（非並列実行用、後方互換性のため保持）
+    #[allow(dead_code)] // 後方互換性のため保持
     async fn generate_deploy(&self, index: &Index) -> Result<String> {
         let mut content = String::from("# デプロイ\n\n");
 
@@ -543,7 +549,8 @@ optional = true
         Ok(content)
     }
 
-    /// FAQセクションを生成
+    /// FAQセクションを生成（非並列実行用、後方互換性のため保持）
+    #[allow(dead_code)] // 後方互換性のため保持
     async fn generate_faq(&self, index: &Index) -> Result<String> {
         let mut content = String::from("# FAQ\n\n");
 
