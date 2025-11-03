@@ -474,8 +474,122 @@ impl Summarizer {
         method_lines.join("\n")
     }
 
-    /// 関数の目的を推定（簡易版）
-    fn infer_function_purpose_simple(&self, func_name: &str) -> String {
+    /// 英語のコメントを日本語に翻訳（簡易版）
+    /// 
+    /// # 引数
+    /// * `doc` - 英語のドキュメント文字列
+    /// 
+    /// # 戻り値
+    /// * `String` - 日本語に翻訳された説明
+    pub fn translate_doc_to_japanese(&self, doc: &str) -> String {
+        // 簡易的な翻訳ルール（実際の実装ではLLM APIを使用可能）
+        // よくある英語のパターンを日本語に変換
+        let mut translated = doc.to_string();
+        
+        // パターンマッチングによる簡易翻訳
+        let replacements = vec![
+            ("returns", "返します"),
+            ("returns the", "を返します"),
+            ("returns a", "を返します"),
+            ("returns an", "を返します"),
+            ("return", "返す"),
+            ("gets", "取得します"),
+            ("get", "取得する"),
+            ("sets", "設定します"),
+            ("set", "設定する"),
+            ("creates", "作成します"),
+            ("create", "作成する"),
+            ("checks", "チェックします"),
+            ("check", "チェックする"),
+            ("validates", "検証します"),
+            ("validate", "検証する"),
+            ("parses", "解析します"),
+            ("parse", "解析する"),
+            ("handles", "処理します"),
+            ("handle", "処理する"),
+            ("processes", "処理します"),
+            ("process", "処理する"),
+            ("if", "もし"),
+            ("when", "時に"),
+            ("when the", "時に"),
+            ("this function", "この関数は"),
+            ("this method", "このメソッドは"),
+            ("this", "これ"),
+            ("the", ""),
+            ("a", ""),
+            ("an", ""),
+            ("is", "は"),
+            ("are", "は"),
+            ("does", "します"),
+            ("will", "します"),
+            ("should", "すべきです"),
+            ("must", "しなければなりません"),
+            ("can", "できます"),
+            ("may", "かもしれません"),
+            ("or", "または"),
+            ("and", "と"),
+            ("with", "と共に"),
+            ("for", "のために"),
+            ("from", "から"),
+            ("to", "へ"),
+            ("by", "によって"),
+            ("in", "で"),
+            ("at", "で"),
+            ("on", "で"),
+            ("of", "の"),
+            ("parameter", "パラメータ"),
+            ("parameters", "パラメータ"),
+            ("argument", "引数"),
+            ("arguments", "引数"),
+            ("value", "値"),
+            ("values", "値"),
+            ("data", "データ"),
+            ("error", "エラー"),
+            ("errors", "エラー"),
+            ("result", "結果"),
+            ("results", "結果"),
+            ("function", "関数"),
+            ("method", "メソッド"),
+            ("class", "クラス"),
+            ("object", "オブジェクト"),
+            ("string", "文字列"),
+            ("number", "数値"),
+            ("boolean", "真偽値"),
+            ("array", "配列"),
+            ("list", "リスト"),
+            ("map", "マップ"),
+            ("hash", "ハッシュ"),
+            ("file", "ファイル"),
+            ("path", "パス"),
+            ("directory", "ディレクトリ"),
+            ("directory exists", "ディレクトリが存在する場合"),
+            ("does not exist", "存在しない場合"),
+            ("exists", "存在する"),
+            ("not set", "設定されていない"),
+            ("is set", "設定されている"),
+            ("will be", "になります"),
+            ("canonicalized", "正規化されます"),
+            ("will err", "エラーになります"),
+            ("err if", "エラーになります"),
+        ];
+        
+        for (en, ja) in replacements.iter() {
+            let pattern = format!(r"\b{}\b", regex::escape(en));
+            if let Ok(re) = regex::Regex::new(&pattern) {
+                translated = re.replace_all(&translated, *ja).to_string();
+            }
+        }
+        
+        // 空でない場合は翻訳結果を返す、空の場合は関数名から推測
+        if translated.trim().is_empty() {
+            "この関数の実装です。".to_string()
+        } else {
+            format!("この関数は{}。", translated.trim())
+        }
+    }
+
+    /// 関数の目的を推定（簡易版、公開メソッド）
+    pub fn infer_function_purpose_simple(&self, func_name: &str) -> String {
         let name_lower = func_name.to_lowercase();
         
         // 関数名から目的を推定
