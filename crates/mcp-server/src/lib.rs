@@ -79,7 +79,13 @@ impl McpServer {
                 result = stdin_reader.next_line() => {
                     match result {
                         Ok(Some(line)) => {
-                            if let Err(e) = self.handle_request(&line, &mut stdout).await {
+                            // 空行をスキップ
+                            let trimmed = line.trim();
+                            if trimmed.is_empty() {
+                                continue;
+                            }
+
+                            if let Err(e) = self.handle_request(trimmed, &mut stdout).await {
                                 error!("リクエスト処理エラー: {}", e);
                                 let error_response = self.create_error_response(
                                     None,
@@ -118,17 +124,19 @@ impl McpServer {
         line: &str,
         stdout: &mut io::Stdout,
     ) -> anyhow::Result<()> {
+        // 空行は無視（既に呼び出し側でチェック済みだが、念のため）
+        if line.trim().is_empty() {
+            return Ok(());
+        }
+
         debug!("リクエスト受信: {}", line);
 
         let request: JsonRpcRequest = match serde_json::from_str(line) {
             Ok(req) => req,
             Err(e) => {
-                let error_response = self.create_error_response(
-                    None,
-                    -32700,
-                    &format!("パースエラー: {}", e),
-                );
-                self.write_response(stdout, &error_response).await?;
+                // パースエラーは警告のみ（無効なリクエストは無視）
+                debug!("JSON-RPCパースエラー（無視）: {}", e);
+                // エラーレスポンスを返さない（リクエストIDがない場合）
                 return Ok(());
             }
         };

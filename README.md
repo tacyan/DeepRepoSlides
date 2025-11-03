@@ -16,22 +16,45 @@ Rust製のMCPツールで、ローカル/Mono-Repoを静的解析して日本語
 cargo build --release
 ```
 
-## 使用方法
+ビルド後、以下のいずれかの方法で実行できます：
 
-### MCPサーバーとして実行
+### 方法1: ビルド済みバイナリを直接実行（推奨）
 
 ```bash
+# MCPサーバーとして実行
 export RUN_AS_MCP=1
-deeprepo-slides-mcp
+./target/release/deeprepo-slides-mcp
+
+# CLIとして実行
+./target/release/deeprepo-slides-mcp index --repo ../my-repo -c deeprepo.toml
+./target/release/deeprepo-slides-mcp wiki --out ./out/wiki
+./target/release/deeprepo-slides-mcp slides --flavor mdbook-reveal --out ./out/slides
+./target/release/deeprepo-slides-mcp publish --mode docs
 ```
 
-### CLIとして実行
+### 方法2: cargo runで実行（開発時）
 
 ```bash
-deeprepo-slides-mcp index --repo ../my-repo -c deeprepo.toml
-deeprepo-slides-mcp wiki --out ./out/wiki
-deeprepo-slides-mcp slides --flavor mdbook-reveal --out ./out/slides
-deeprepo-slides-mcp publish --mode docs
+# MCPサーバーとして実行
+export RUN_AS_MCP=1
+cargo run --release
+
+# CLIとして実行
+cargo run --release -- index --repo ../my-repo -c deeprepo.toml
+cargo run --release -- wiki --out ./out/wiki
+cargo run --release -- slides --flavor mdbook-reveal --out ./out/slides
+cargo run --release -- publish --mode docs
+```
+
+### 方法3: システムにインストール（PATHに追加）
+
+```bash
+# インストール（デフォルトでは ~/.cargo/bin にインストールされます）
+cargo install --path .
+
+# インストール後はどこからでも実行可能
+export RUN_AS_MCP=1
+deeprepo-slides-mcp
 ```
 
 ## 設定ファイル
