@@ -235,11 +235,11 @@ async fn cmd_build_all(config_path: Option<&str>) -> Result<()> {
             &index,
             &config.slides.flavor,
             &config.slides.out_dir.to_string_lossy(),
-            &vec!["overview", "architecture", "modules"]
+            &vec!["overview", "architecture", "modules", "flows", "deploy"]
                 .iter()
                 .map(|s| s.to_string())
                 .collect::<Vec<_>>(),
-            &vec!["html"]
+            &vec!["html", "pdf", "pptx"]
                 .iter()
                 .map(|s| s.to_string())
                 .collect::<Vec<_>>(),
@@ -247,6 +247,9 @@ async fn cmd_build_all(config_path: Option<&str>) -> Result<()> {
         .await?;
     
     println!("スライド生成完了: {}ファイル", slide_result.files.len());
+    for file in &slide_result.files {
+        println!("  - {}: {}", file.format, file.path.display());
+    }
 
     // 4. GitHub Pages公開（オプション）
     if config.publish.mode == "docs" {
