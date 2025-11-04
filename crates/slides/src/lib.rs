@@ -462,21 +462,21 @@ optional = true
         Ok(content)
     }
 
-    /// モジュールスライドを並列実行用に生成（静的メソッド、1スライド1エッセンス）
-    /// tech-book-readerの50並列処理を参考に、16並列で処理
+    /// モジュールスライドを並列実行用に生成（静的メソッド、1ページ1センテンス形式）
+    /// tech-book-readerの50並列翻訳を参考に、16並列で日本語化処理
     async fn generate_modules_slide_parallel(
         index: &Index,
         config: &Config,
     ) -> Result<String> {
         let mut content = String::new();
 
-        // 各モジュールごとに16並列で処理（tech-book-readerの50並列処理を参考）
+        // 各モジュールごとに16並列で処理（tech-book-readerの50並列翻訳を参考）
         let mut module_handles = Vec::new();
         let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(16));
         let index_clone = index.clone();
         let config_clone = config.clone();
         
-        for module in index.modules.iter().take(30) {
+        for module in index.modules.iter() {
             let module = module.clone();
             let index_for_module = index_clone.clone();
             let config_for_module = config_clone.clone();
@@ -499,36 +499,52 @@ optional = true
                     if let Some(file_content) = &file_info.content {
                         let methods = summarizer_for_module.extract_methods_detailed(file_content, &file_info.language);
                         
-                        // 各メソッドごとに1スライドを作成
-                        for method in methods.iter().take(10) {
+                        // 各メソッドごとに1ページ1センテンス形式でスライドを作成
+                        for method in methods.iter() {
+                            // 日本語の説明を生成（英語コメントを翻訳）
+                            let doc_ja = if !method.documentation.is_empty() {
+                                summarizer_for_module.translate_doc_to_japanese(&method.documentation)
+                            } else {
+                                summarizer_for_module.infer_function_purpose_simple(&method.name)
+                            };
+                            
+                            // 1ページ1センテンス形式：説明を1つのセンテンスにまとめる
+                            let description = format!("**{}**は、{}", method.name, doc_ja.trim_start_matches("この関数は").trim_start_matches("このメソッドは").trim());
+                            
+                            // スライドの開始
                             module_content.push_str("---\n");
                             module_content.push_str(&format!("## {}\n\n", method.name));
                             
-                            // わかりやすい説明
-                            if !method.documentation.is_empty() {
-                                module_content.push_str(&format!("**{0}**とは、{1}\n\n", method.name, method.documentation));
-                            } else {
-                                module_content.push_str(&format!("**{0}**関数について説明します。\n\n", method.name));
-                            }
+                            // 1センテンスの説明
+                            module_content.push_str(&format!("{}\n\n", description));
                             
-                            // コードスニペット（短い場合のみ）
+                            // コードブロック
                             let code_lines: Vec<&str> = method.code_snippet.lines().collect();
-                            if code_lines.len() <= 15 {
+                            if code_lines.len() <= 20 {
+                                // 短いコードは全文表示
                                 module_content.push_str("```");
                                 module_content.push_str(&method.language);
                                 module_content.push_str("\n");
                                 module_content.push_str(&method.code_snippet);
                                 module_content.push_str("\n```\n\n");
                             } else {
-                                // 重要な部分だけ表示
+                                // 長いコードは重要な部分だけ表示
                                 module_content.push_str("```");
                                 module_content.push_str(&method.language);
                                 module_content.push_str("\n");
+                                // 関数の定義部分（最初の5行）
                                 for line in code_lines.iter().take(5) {
                                     module_content.push_str(line);
                                     module_content.push_str("\n");
                                 }
                                 module_content.push_str("// ... (省略) ...\n");
+                                // 関数の終了部分（最後の3行）
+                                if code_lines.len() > 8 {
+                                    for line in code_lines.iter().skip(code_lines.len().saturating_sub(3)) {
+                                        module_content.push_str(line);
+                                        module_content.push_str("\n");
+                                    }
+                                }
                                 module_content.push_str("```\n\n");
                             }
                             
@@ -545,13 +561,17 @@ optional = true
                 module_content.push_str(&format!("**パス**: `{}`\n\n", module.path.display()));
                 module_content.push_str(&format!("**言語**: {}\n\n", module.language));
                 
-                // 要約の最初の数行を表示
+                // 要約を日本語で表示（1センテンスにまとめる）
                 let summary_lines: Vec<&str> = summary_result.content_md.lines().take(5).collect();
+                let mut summary_text = String::new();
                 for line in summary_lines {
                     if !line.trim().is_empty() && !line.starts_with('#') {
-                        module_content.push_str(line);
-                        module_content.push_str("\n");
+                        summary_text.push_str(line.trim());
+                        summary_text.push_str(" ");
                     }
+                }
+                if !summary_text.is_empty() {
+                    module_content.push_str(&format!("{}\n\n", summary_text.trim()));
                 }
                 module_content.push_str("\n---\n\n");
                 
@@ -560,7 +580,7 @@ optional = true
             module_handles.push(handle);
         }
         
-        // すべてのモジュールスライドを並列実行して結果を収集
+        // すべてのモジュールスライドを16並列実行して結果を収集
         for handle in module_handles {
             if let Ok(Ok(module_content)) = handle.await {
                 content.push_str(&module_content);
