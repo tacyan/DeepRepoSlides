@@ -117,14 +117,13 @@ impl SlideBuilder {
             
             let handle = tokio::spawn(async move {
                 // 各セクション用に新しいインスタンスを作成
-                let summarizer = Summarizer::new(config_for_section.clone());
                 let diagrammer = Diagrammer::new(config_for_section.clone());
                 
                 Self::generate_reveal_section_parallel(
                     &index_for_section,
                     &src_dir_clone,
                     &section,
-                    &summarizer,
+                    &config_for_section,
                     &diagrammer,
                 ).await
             });
@@ -193,7 +192,7 @@ impl SlideBuilder {
                 match section.as_str() {
                     "overview" => Self::generate_overview_slide_parallel(&index_for_section, &summarizer, &diagrammer).await,
                     "architecture" => Self::generate_architecture_slide_parallel(&index_for_section, &summarizer, &diagrammer).await,
-                    "modules" => Self::generate_modules_slide_parallel(&index_for_section, &summarizer).await,
+                    "modules" => Self::generate_modules_slide_parallel(&index_for_section, &config_for_section).await,
                     "flows" => Self::generate_flows_slide_parallel(&index_for_section, &diagrammer).await,
                     "deploy" => Self::generate_deploy_slide_parallel(&index_for_section, &diagrammer).await,
                     _ => Ok(format!("# {}\n\nセクションの内容\n", section)),
@@ -291,6 +290,7 @@ build-dir = "book"
 default-theme = "black"
 
 [output.reveal]
+optional = true
 "#,
             self.config.project.name
         );
@@ -324,13 +324,14 @@ default-theme = "black"
         index: &Index,
         src_dir: &Path,
         section: &str,
-        summarizer: &Summarizer,
+        config: &Config,
         diagrammer: &Diagrammer,
     ) -> Result<()> {
+        let summarizer = Summarizer::new(config.clone());
         let content = match section {
-            "overview" => Self::generate_overview_slide_parallel(index, summarizer, diagrammer).await?,
-            "architecture" => Self::generate_architecture_slide_parallel(index, summarizer, diagrammer).await?,
-            "modules" => Self::generate_modules_slide_parallel(index, summarizer).await?,
+            "overview" => Self::generate_overview_slide_parallel(index, &summarizer, diagrammer).await?,
+            "architecture" => Self::generate_architecture_slide_parallel(index, &summarizer, diagrammer).await?,
+            "modules" => Self::generate_modules_slide_parallel(index, config).await?,
             "flows" => Self::generate_flows_slide_parallel(index, diagrammer).await?,
             "deploy" => Self::generate_deploy_slide_parallel(index, diagrammer).await?,
             _ => format!("# {}\n\nセクションの内容\n", section),
@@ -462,79 +463,108 @@ default-theme = "black"
     }
 
     /// モジュールスライドを並列実行用に生成（静的メソッド、1スライド1エッセンス）
+    /// tech-book-readerの50並列処理を参考に、16並列で処理
     async fn generate_modules_slide_parallel(
         index: &Index,
-        summarizer: &Summarizer,
+        config: &Config,
     ) -> Result<String> {
         let mut content = String::new();
 
-        // 各モジュールごとに、メソッド単位で1スライド1エッセンスを生成
+        // 各モジュールごとに16並列で処理（tech-book-readerの50並列処理を参考）
+        let mut module_handles = Vec::new();
+        let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(16));
+        let index_clone = index.clone();
+        let config_clone = config.clone();
+        
         for module in index.modules.iter().take(30) {
-            // モジュールの要約を取得
-            let summary_result = summarizer
-                .summarize(index, "module", &module.path.to_string_lossy(), "detailed-ja")
-                .await?;
+            let module = module.clone();
+            let index_for_module = index_clone.clone();
+            let config_for_module = config_clone.clone();
+            let permit = semaphore.clone();
             
-            // ファイル情報を取得してメソッドを抽出
-            if let Some(file_info) = index.files.iter().find(|f| f.path == module.path) {
-                if let Some(file_content) = &file_info.content {
-                    let methods = summarizer.extract_methods_detailed(file_content, &file_info.language);
-                    
-                    // 各メソッドごとに1スライドを作成
-                    for method in methods.iter().take(10) {
-                        content.push_str("---\n");
-                        content.push_str(&format!("## {}\n\n", method.name));
+            let handle = tokio::spawn(async move {
+                let _permit = permit.acquire().await.unwrap();
+                let mut module_content = String::new();
+                
+                // 各タスクで新しいSummarizerインスタンスを作成
+                let summarizer_for_module = Summarizer::new(config_for_module.clone());
+                
+                // モジュールの要約を取得
+                let summary_result = summarizer_for_module
+                    .summarize(&index_for_module, "module", &module.path.to_string_lossy(), "detailed-ja")
+                    .await?;
+                
+                // ファイル情報を取得してメソッドを抽出
+                if let Some(file_info) = index_for_module.files.iter().find(|f| f.path == module.path) {
+                    if let Some(file_content) = &file_info.content {
+                        let methods = summarizer_for_module.extract_methods_detailed(file_content, &file_info.language);
                         
-                        // わかりやすい説明
-                        if !method.documentation.is_empty() {
-                            content.push_str(&format!("**{0}**とは、{1}\n\n", method.name, method.documentation));
-                        } else {
-                            content.push_str(&format!("**{0}**関数について説明します。\n\n", method.name));
-                        }
-                        
-                        // コードスニペット（短い場合のみ）
-                        let code_lines: Vec<&str> = method.code_snippet.lines().collect();
-                        if code_lines.len() <= 15 {
-                            content.push_str("```");
-                            content.push_str(&method.language);
-                            content.push_str("\n");
-                            content.push_str(&method.code_snippet);
-                            content.push_str("\n```\n\n");
-                        } else {
-                            // 重要な部分だけ表示
-                            content.push_str("```");
-                            content.push_str(&method.language);
-                            content.push_str("\n");
-                            for line in code_lines.iter().take(5) {
-                                content.push_str(line);
-                                content.push_str("\n");
+                        // 各メソッドごとに1スライドを作成
+                        for method in methods.iter().take(10) {
+                            module_content.push_str("---\n");
+                            module_content.push_str(&format!("## {}\n\n", method.name));
+                            
+                            // わかりやすい説明
+                            if !method.documentation.is_empty() {
+                                module_content.push_str(&format!("**{0}**とは、{1}\n\n", method.name, method.documentation));
+                            } else {
+                                module_content.push_str(&format!("**{0}**関数について説明します。\n\n", method.name));
                             }
-                            content.push_str("// ... (省略) ...\n");
-                            content.push_str("```\n\n");
+                            
+                            // コードスニペット（短い場合のみ）
+                            let code_lines: Vec<&str> = method.code_snippet.lines().collect();
+                            if code_lines.len() <= 15 {
+                                module_content.push_str("```");
+                                module_content.push_str(&method.language);
+                                module_content.push_str("\n");
+                                module_content.push_str(&method.code_snippet);
+                                module_content.push_str("\n```\n\n");
+                            } else {
+                                // 重要な部分だけ表示
+                                module_content.push_str("```");
+                                module_content.push_str(&method.language);
+                                module_content.push_str("\n");
+                                for line in code_lines.iter().take(5) {
+                                    module_content.push_str(line);
+                                    module_content.push_str("\n");
+                                }
+                                module_content.push_str("// ... (省略) ...\n");
+                                module_content.push_str("```\n\n");
+                            }
+                            
+                            module_content.push_str("---\n\n");
                         }
-                        
-                        content.push_str("---\n\n");
                     }
                 }
-            }
-            
-            // モジュール全体の説明スライドも追加
-            if content.is_empty() || !content.ends_with("---\n\n") {
-                content.push_str("---\n");
-            }
-            content.push_str(&format!("## モジュール: {}\n\n", module.name));
-            content.push_str(&format!("**パス**: `{}`\n\n", module.path.display()));
-            content.push_str(&format!("**言語**: {}\n\n", module.language));
-            
-            // 要約の最初の数行を表示
-            let summary_lines: Vec<&str> = summary_result.content_md.lines().take(5).collect();
-            for line in summary_lines {
-                if !line.trim().is_empty() && !line.starts_with('#') {
-                    content.push_str(line);
-                    content.push_str("\n");
+                
+                // モジュール全体の説明スライドも追加
+                if module_content.is_empty() || !module_content.ends_with("---\n\n") {
+                    module_content.push_str("---\n");
                 }
+                module_content.push_str(&format!("## モジュール: {}\n\n", module.name));
+                module_content.push_str(&format!("**パス**: `{}`\n\n", module.path.display()));
+                module_content.push_str(&format!("**言語**: {}\n\n", module.language));
+                
+                // 要約の最初の数行を表示
+                let summary_lines: Vec<&str> = summary_result.content_md.lines().take(5).collect();
+                for line in summary_lines {
+                    if !line.trim().is_empty() && !line.starts_with('#') {
+                        module_content.push_str(line);
+                        module_content.push_str("\n");
+                    }
+                }
+                module_content.push_str("\n---\n\n");
+                
+                Ok::<String, anyhow::Error>(module_content)
+            });
+            module_handles.push(handle);
+        }
+        
+        // すべてのモジュールスライドを並列実行して結果を収集
+        for handle in module_handles {
+            if let Ok(Ok(module_content)) = handle.await {
+                content.push_str(&module_content);
             }
-            content.push_str("\n---\n\n");
         }
 
         Ok(content)

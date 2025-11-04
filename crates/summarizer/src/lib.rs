@@ -25,6 +25,7 @@ use config::Config;
 use analyzer_core::{Index, FileInfo};
 
 /// サマライザー
+#[derive(Clone)]
 pub struct Summarizer {
     #[allow(dead_code)]
     config: Config,
